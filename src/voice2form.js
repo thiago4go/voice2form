@@ -1,4 +1,7 @@
 (function (global) {
+  var MIN_RECORDING_MS = 2000;
+  var DEFAULT_RECORDING_MS = 8000;
+
   function Voice2Form(options) {
     if (!options || !options.backendUrl) {
       throw new Error("voice2form requires a backendUrl");
@@ -24,7 +27,7 @@
       buttonLabel: options.buttonLabel || "🎤 Start voice walkthrough",
       sendLabel: options.sendLabel || "Send",
       inputPlaceholder: options.inputPlaceholder || "Type your answer",
-      maxRecordingMs: Math.max(2000, Number(options.maxRecordingMs) || 8000),
+      maxRecordingMs: Math.max(MIN_RECORDING_MS, Number(options.maxRecordingMs) || DEFAULT_RECORDING_MS),
       systemPrompt:
         options.systemPrompt ||
         "You are a form-filling assistant. Return only JSON with {fields, reply}. fields is an object where each key is a form field name and each value is the text value to set.",
@@ -37,7 +40,7 @@
     this.supportsMediaRecorder =
       typeof global !== "undefined" &&
       "MediaRecorder" in global &&
-      navigator &&
+      typeof navigator !== "undefined" &&
       navigator.mediaDevices &&
       typeof navigator.mediaDevices.getUserMedia === "function";
 
@@ -284,7 +287,6 @@
   };
 
   Voice2Form.prototype.listenOnce = function () {
-    var self = this;
     var Recognition = global.SpeechRecognition || global.webkitSpeechRecognition;
     var recognition = new Recognition();
     recognition.lang = this.options.language;
@@ -292,19 +294,25 @@
     recognition.maxAlternatives = 1;
 
     return new Promise(function (resolve, reject) {
+      var settled = false;
+
       recognition.onresult = function (event) {
+        settled = true;
         var transcript = event.results[0][0].transcript;
         resolve(transcript);
       };
       recognition.onerror = function (event) {
+        settled = true;
         reject(new Error(event.error || "Speech recognition failed"));
       };
       recognition.onnomatch = function () {
+        settled = true;
         reject(new Error("No speech recognized"));
       };
       recognition.onend = function () {
-        if (!self.supportsSpeechRecognition) {
-          reject(new Error("Speech recognition unavailable"));
+        if (!settled) {
+          settled = true;
+          reject(new Error("Speech recognition ended before receiving input"));
         }
       };
       recognition.start();
@@ -330,7 +338,7 @@
           reject(new Error("Audio recording failed"));
         };
 
-        recorder.onstop = function () {
+        recorder.onstop = async function () {
           clearTimeout(stopTimer);
           var blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
 
@@ -343,9 +351,12 @@
             return;
           }
 
-          this.transcribeAudio(blob)
-            .then(resolve)
-            .catch(reject);
+          try {
+            var text = await this.transcribeAudio(blob);
+            resolve(text);
+          } catch (error) {
+            reject(error);
+          }
         }.bind(this);
 
         recorder.start();
@@ -441,8 +452,8 @@
     for (var i = 0; i < schema.length; i += 1) {
       var field = schema[i];
       var candidate =
-        (field.name && form.querySelector("[name='" + field.name + "']")) ||
-        (field.id && form.querySelector("#" + field.id));
+        (field.name && this.getByName(form, field.name)) ||
+        (field.id && this.getById(form, field.id));
 
       if (!candidate) {
         continue;
@@ -464,7 +475,7 @@
     }
 
     if (type === "radio") {
-      var radios = field.name ? form.querySelectorAll("input[type='radio'][name='" + field.name + "']") : [field];
+      var radios = field.name ? this.getByNameAll(form, field.name, "input[type='radio']") : [field];
       for (var i = 0; i < radios.length; i += 1) {
         if (radios[i].checked) {
           return true;
@@ -478,7 +489,7 @@
 
   Voice2Form.prototype.findLabelText = function (form, field) {
     if (field.id) {
-      var byFor = form.querySelector("label[for='" + field.id + "']");
+      var byFor = form.querySelector("label[for='" + this.escapeSelectorValue(field.id) + "']");
       if (byFor) {
         return byFor.textContent.trim();
       }
@@ -555,7 +566,7 @@
     for (var i = 0; i < keys.length; i += 1) {
       var key = keys[i];
       var value = fieldMap[key];
-      var byName = form.querySelectorAll("[name='" + key + "']");
+      var byName = this.getByNameAll(form, key);
 
       if (byName.length > 1 && byName[0].type && byName[0].type.toLowerCase() === "radio") {
         for (var r = 0; r < byName.length; r += 1) {
@@ -564,7 +575,7 @@
         continue;
       }
 
-      var candidate = byName[0] || form.querySelector("#" + key);
+      var candidate = byName[0] || this.getById(form, key);
 
       if (!candidate) {
         continue;
@@ -589,6 +600,29 @@
 
     field.dispatchEvent(new Event("input", { bubbles: true }));
     field.dispatchEvent(new Event("change", { bubbles: true }));
+  };
+
+  Voice2Form.prototype.escapeSelectorValue = function (value) {
+    var stringValue = String(value == null ? "" : value);
+    if (typeof global.CSS !== "undefined" && typeof global.CSS.escape === "function") {
+      return global.CSS.escape(stringValue);
+    }
+    return stringValue.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+  };
+
+  Voice2Form.prototype.getByNameAll = function (form, name, prefixSelector) {
+    var escapedName = this.escapeSelectorValue(name);
+    var selector = (prefixSelector ? prefixSelector : "") + "[name='" + escapedName + "']";
+    return form.querySelectorAll(selector);
+  };
+
+  Voice2Form.prototype.getByName = function (form, name) {
+    var nodes = this.getByNameAll(form, name);
+    return nodes[0] || null;
+  };
+
+  Voice2Form.prototype.getById = function (form, id) {
+    return form.querySelector("#" + this.escapeSelectorValue(id));
   };
 
   Voice2Form.prototype.speak = async function (text) {
