@@ -341,6 +341,7 @@
       };
 
       recorder.onerror = function () {
+        clearTimeout(stopTimer);
         reject(new Error("Audio recording failed"));
       };
 
@@ -524,9 +525,11 @@
 
   Voice2Form.prototype.findLabelText = function (form, field) {
     if (field.id) {
-      var byFor = form.querySelector("label[for='" + this.escapeSelectorValue(field.id) + "']");
-      if (byFor) {
-        return byFor.textContent.trim();
+      var labels = form.querySelectorAll("label[for]");
+      for (var i = 0; i < labels.length; i += 1) {
+        if (labels[i].getAttribute("for") === field.id) {
+          return labels[i].textContent.trim();
+        }
       }
     }
 
@@ -634,18 +637,18 @@
     field.dispatchEvent(new Event("change", { bubbles: true }));
   };
 
-  Voice2Form.prototype.escapeSelectorValue = function (value) {
-    var stringValue = String(value == null ? "" : value);
-    if (typeof global.CSS !== "undefined" && typeof global.CSS.escape === "function") {
-      return global.CSS.escape(stringValue);
-    }
-    return stringValue.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
-  };
-
   Voice2Form.prototype.getByNameAll = function (form, name, prefixSelector) {
-    var escapedName = this.escapeSelectorValue(name);
-    var selector = (prefixSelector ? prefixSelector : "") + "[name='" + escapedName + "']";
-    return form.querySelectorAll(selector);
+    var selector = prefixSelector || "[name]";
+    var nodes = form.querySelectorAll(selector);
+    var matches = [];
+
+    for (var i = 0; i < nodes.length; i += 1) {
+      if (nodes[i].name === String(name)) {
+        matches.push(nodes[i]);
+      }
+    }
+
+    return matches;
   };
 
   Voice2Form.prototype.getByName = function (form, name) {
@@ -654,7 +657,12 @@
   };
 
   Voice2Form.prototype.getById = function (form, id) {
-    return form.querySelector("#" + this.escapeSelectorValue(id));
+    var targetId = String(id);
+    var element = form.ownerDocument.getElementById(targetId);
+    if (element && form.contains(element)) {
+      return element;
+    }
+    return null;
   };
 
   Voice2Form.prototype.speak = async function (text) {
@@ -708,6 +716,10 @@
 
     try {
       await audio.play();
+      await new Promise(function (resolve) {
+        audio.onended = resolve;
+        audio.onerror = resolve;
+      });
     } catch (error) {
       throw new Error("Failed to play audio response.");
     } finally {
