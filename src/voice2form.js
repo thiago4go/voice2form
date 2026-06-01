@@ -641,9 +641,10 @@
     var selector = prefixSelector || "[name]";
     var nodes = form.querySelectorAll(selector);
     var matches = [];
+    var targetName = String(name);
 
     for (var i = 0; i < nodes.length; i += 1) {
-      if (nodes[i].name === String(name)) {
+      if (nodes[i].name === targetName) {
         matches.push(nodes[i]);
       }
     }
