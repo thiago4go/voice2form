@@ -1,9 +1,14 @@
 # voice2form
 
-Framework-agnostic browser plugin that reads any `<form>` and turns form filling into a voice-to-voice chatbot experience.
+Framework-agnostic browser plugin that reads any `<form>` and turns form filling into a conversational voice-to-voice walkthrough.
 
 - Works on any site that can load a JavaScript file
-- Uses browser speech recognition + speech synthesis
+- Guides users one field at a time with a narrative chat flow
+- Supports multiple input/output integrations for broad device compatibility:
+  - Browser `SpeechRecognition` when available
+  - Audio recording + backend transcription (`/v1/audio/transcriptions`) fallback
+  - Text input fallback for devices without mic/speech support
+  - Browser speech synthesis or backend TTS (`/v1/audio/speech`)
 - Uses an **OpenAI-compatible backend** (`/v1/chat/completions`)
 
 ## Quick start (pure HTML)
@@ -15,7 +20,9 @@ Framework-agnostic browser plugin that reads any `<form>` and turns form filling
     backendUrl: "https://your-openai-compatible-backend",
     apiKey: "YOUR_API_KEY",
     model: "gpt-4o-mini",
-    selector: "form"
+    selector: "form",
+    language: "en-US",
+    transcriptionModel: "gpt-4o-mini-transcribe"
   });
 </script>
 ```
@@ -34,6 +41,16 @@ The model should return strict JSON in `choices[0].message.content`:
   "reply": "Great, I filled your form."
 }
 ```
+
+For backend transcription fallback, expose:
+- `POST {backendUrl}/v1/audio/transcriptions`
+- Multipart form with `file` and `model`
+- JSON response with `{ "text": "..." }`
+
+Optional backend TTS output:
+- `POST {backendUrl}/v1/audio/speech`
+- JSON with `model` and `input`
+- Audio response body
 
 ## Deploy in different stacks
 
@@ -67,5 +84,5 @@ Just include script and initialize (Quick start above).
 
 ## Notes
 
-- Requires browser support for `SpeechRecognition` (or `webkitSpeechRecognition`).
+- `SpeechRecognition` improves UX but is optional; the plugin falls back to recorded audio transcription and typed responses.
 - For production, keep API keys server-side when possible (proxy requests through your backend).
