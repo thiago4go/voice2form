@@ -7,6 +7,12 @@
       throw new Error("voice2form requires a backendUrl");
     }
 
+    var configuredRecordingMs =
+      options.maxRecordingMs == null ? DEFAULT_RECORDING_MS : Number(options.maxRecordingMs);
+    if (!isFinite(configuredRecordingMs)) {
+      configuredRecordingMs = DEFAULT_RECORDING_MS;
+    }
+
     this.options = {
       backendUrl: options.backendUrl.replace(/\/$/, ""),
       apiKey: options.apiKey || "",
@@ -27,7 +33,7 @@
       buttonLabel: options.buttonLabel || "🎤 Start voice walkthrough",
       sendLabel: options.sendLabel || "Send",
       inputPlaceholder: options.inputPlaceholder || "Type your answer",
-      maxRecordingMs: Math.max(MIN_RECORDING_MS, Number(options.maxRecordingMs) || DEFAULT_RECORDING_MS),
+      maxRecordingMs: Math.max(MIN_RECORDING_MS, configuredRecordingMs),
       systemPrompt:
         options.systemPrompt ||
         "You are a form-filling assistant. Return only JSON with {fields, reply}. fields is an object where each key is a form field name and each value is the text value to set.",
@@ -320,58 +326,59 @@
   };
 
   Voice2Form.prototype.recordAndTranscribe = async function () {
+    var self = this;
     var stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     var recorder = new MediaRecorder(stream);
     var chunks = [];
 
-    return new Promise(
-      function (resolve, reject) {
-        var stopTimer = null;
+    return new Promise(function (resolve, reject) {
+      var stopTimer = null;
 
-        recorder.ondataavailable = function (event) {
-          if (event.data && event.data.size > 0) {
-            chunks.push(event.data);
-          }
-        };
+      recorder.ondataavailable = function (event) {
+        if (event.data && event.data.size > 0) {
+          chunks.push(event.data);
+        }
+      };
 
-        recorder.onerror = function () {
-          reject(new Error("Audio recording failed"));
-        };
+      recorder.onerror = function () {
+        reject(new Error("Audio recording failed"));
+      };
 
-        recorder.onstop = async function () {
-          clearTimeout(stopTimer);
-          var blob = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
+      recorder.onstop = async function () {
+        clearTimeout(stopTimer);
+        var mimeType = recorder.mimeType || "audio/webm";
+        var blob = new Blob(chunks, { type: mimeType });
 
-          for (var i = 0; i < stream.getTracks().length; i += 1) {
-            stream.getTracks()[i].stop();
-          }
+        for (var i = 0; i < stream.getTracks().length; i += 1) {
+          stream.getTracks()[i].stop();
+        }
 
-          if (!blob.size) {
-            reject(new Error("No audio captured"));
-            return;
-          }
+        if (!blob.size) {
+          reject(new Error("No audio captured"));
+          return;
+        }
 
-          try {
-            var text = await this.transcribeAudio(blob);
-            resolve(text);
-          } catch (error) {
-            reject(error);
-          }
-        }.bind(this);
+        try {
+          var text = await self.transcribeAudio(blob, mimeType);
+          resolve(text);
+        } catch (error) {
+          reject(error);
+        }
+      };
 
-        recorder.start();
-        stopTimer = setTimeout(function () {
-          if (recorder.state !== "inactive") {
-            recorder.stop();
-          }
-        }, this.options.maxRecordingMs);
-      }.bind(this)
-    );
+      recorder.start();
+      stopTimer = setTimeout(function () {
+        if (recorder.state !== "inactive") {
+          recorder.stop();
+        }
+      }, self.options.maxRecordingMs);
+    });
   };
 
-  Voice2Form.prototype.transcribeAudio = async function (audioBlob) {
+  Voice2Form.prototype.transcribeAudio = async function (audioBlob, mimeType) {
     var formData = new FormData();
-    formData.append("file", audioBlob, "voice2form-input.webm");
+    var extension = this.mimeTypeToExtension(mimeType || audioBlob.type || "audio/webm");
+    formData.append("file", audioBlob, "voice2form-input." + extension);
     formData.append("model", this.options.transcriptionModel);
     formData.append("language", this.options.language);
 
@@ -402,6 +409,34 @@
     return {
       Authorization: "Bearer " + this.options.apiKey,
     };
+  };
+
+  Voice2Form.prototype.jsonHeaders = function () {
+    var headers = {
+      "Content-Type": "application/json",
+    };
+    var authHeaders = this.authHeaderOnly();
+    if (authHeaders.Authorization) {
+      headers.Authorization = authHeaders.Authorization;
+    }
+    return headers;
+  };
+
+  Voice2Form.prototype.mimeTypeToExtension = function (mimeType) {
+    var type = String(mimeType || "").toLowerCase();
+    if (type.indexOf("ogg") !== -1) {
+      return "ogg";
+    }
+    if (type.indexOf("mp4") !== -1 || type.indexOf("m4a") !== -1) {
+      return "m4a";
+    }
+    if (type.indexOf("mpeg") !== -1 || type.indexOf("mp3") !== -1) {
+      return "mp3";
+    }
+    if (type.indexOf("wav") !== -1) {
+      return "wav";
+    }
+    return "webm";
   };
 
   Voice2Form.prototype.updateStatus = function (node, text) {
@@ -527,10 +562,7 @@
 
     var response = await fetch(this.options.backendUrl + this.options.openAIPath, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: this.options.apiKey ? "Bearer " + this.options.apiKey : "",
-      },
+      headers: this.jsonHeaders(),
       body: JSON.stringify(payload),
     });
 
@@ -655,10 +687,7 @@
   Voice2Form.prototype.speakWithBackend = async function (text) {
     var response = await fetch(this.options.backendUrl + this.options.ttsPath, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: this.options.apiKey ? "Bearer " + this.options.apiKey : "",
-      },
+      headers: this.jsonHeaders(),
       body: JSON.stringify({
         model: this.options.ttsModel,
         input: String(text),
@@ -677,8 +706,13 @@
     var audioUrl = URL.createObjectURL(audioBlob);
     var audio = new Audio(audioUrl);
 
-    await audio.play();
-    URL.revokeObjectURL(audioUrl);
+    try {
+      await audio.play();
+    } catch (error) {
+      throw new Error("Failed to play audio response.");
+    } finally {
+      URL.revokeObjectURL(audioUrl);
+    }
   };
 
   global.Voice2Form = Voice2Form;
